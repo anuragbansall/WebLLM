@@ -2,6 +2,14 @@ import React, { useEffect, useRef, useState } from "react";
 import Message from "./components/Message";
 import * as webllm from "@mlc-ai/web-llm";
 
+// Ordered largest -> smallest so we can fall back downward
+const FALLBACK_MODELS = [
+  "Llama-3.1-8B-Instruct-q4f32_1-MLC",
+  "Llama-3.1-8B-Instruct-q4f16_1-MLC",
+  "Llama-3.2-3B-Instruct-q4f16_1-MLC",
+  "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+];
+
 // Tiny helper for ids
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -16,9 +24,13 @@ function App() {
   const [engine, setEngine] = useState(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  // Model management
+  const fallbackModels = FALLBACK_MODELS; // alias for readability
   const [modelName, setModelName] = useState(
-    "Llama-3.1-8B-Instruct-q4f32_1-MLC"
+    // default to smallest for quicker first load
+    "Llama-3.2-1B-Instruct-q4f16_1-MLC"
   );
+  const [reloadToken, setReloadToken] = useState(0); // increment to force reload when same model selected again
   const [error, setError] = useState(null);
   const triedModelsRef = useRef([]);
 
@@ -26,23 +38,19 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const startIndex =
+      fallbackModels.indexOf(modelName) !== -1
+        ? fallbackModels.indexOf(modelName)
+        : 0;
 
-    // Ordered fallback list (largest to smallest). Adjust with available models in your bundle.
-    const fallbackModels = [
-      "Llama-3.2-1B-Instruct-q4f16_1-MLC", // much smaller
-      "Llama-3.1-8B-Instruct-q4f32_1-MLC", // original attempt
-      "Llama-3.1-8B-Instruct-q4f16_1-MLC", // slightly smaller (example)
-      "Llama-3.2-3B-Instruct-q4f16_1-MLC", // smaller
-    ];
-
-    const loadModel = async (nameIdx = 0) => {
+    const loadModel = async (nameIdx = startIndex) => {
+      if (cancelled) return;
       if (nameIdx >= fallbackModels.length) return; // exhausted
       const selectedModel = fallbackModels[nameIdx];
-      setModelName(selectedModel);
-      triedModelsRef.current.push(selectedModel);
       setIsDownloading(true);
       setDownloadProgress(0);
       setError(null);
+      triedModelsRef.current.push(selectedModel);
       console.log("Attempting model:", selectedModel);
       try {
         const created = await webllm.CreateMLCEngine(selectedModel, {
@@ -51,7 +59,6 @@ function App() {
             const percent = Math.round((progressObj.progress ?? 0) * 100);
             setDownloadProgress(percent);
             setIsDownloading(percent < 100);
-            // Log extra diagnostic text if present
             if (progressObj.text) console.log(progressObj.text);
           },
         });
@@ -65,22 +72,22 @@ function App() {
         console.error("Engine init failed for", selectedModel, err);
         const message = String(err?.message || err);
         setError(message);
-
-        // Heuristic: GPU device lost / OOM -> try next smaller model
         if (/device lost|insufficient memory|Device was lost/i.test(message)) {
           console.warn("GPU device lost or OOM; trying smaller model...");
-          await loadModel(nameIdx + 1);
+          await loadModel(nameIdx + 1); // try next smaller
         } else {
           setIsDownloading(false);
         }
       }
     };
 
-    loadModel();
+    // Only auto-load if engine not set (we reset engine when switching models)
+    if (!engine) loadModel();
     return () => {
       cancelled = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelName, reloadToken, engine]);
 
   // Always scroll to bottom when messages change
   useEffect(() => {
@@ -162,25 +169,63 @@ function App() {
     ]);
   };
 
-  if ((isDownloading && !engine) || (!engine && error)) {
-    // Download screen
+  const handleModelChange = (e) => {
+    const newModel = e.target.value;
+    if (newModel === modelName && engine) return; // no-op
+    setModelName(newModel);
+    setEngine(null); // trigger re-init loading screen
+    setMessages([
+      {
+        id: uid(),
+        role: "system",
+        content: `Switched to ${newModel}. Initializing...`,
+      },
+    ]);
+    setReloadToken((t) => t + 1);
+  };
+
+  // Keep showing loading screen until engine is actually initialized.
+  // (Previously UI switched when download reached 100% but engine promise not yet resolved.)
+  if (!engine) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-slate-100">
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-slate-100 px-4">
         <div className="w-full max-w-md p-8 rounded-lg bg-slate-800 shadow-lg flex flex-col items-center">
           <h2 className="text-lg font-semibold mb-4">
-            {error ? "Initialization Issue" : "Loading Model..."}
+            {error
+              ? "Initialization Issue"
+              : isDownloading
+              ? "Loading Model..."
+              : "Initializing Engine..."}
           </h2>
-          <p className="text-xs mb-2 font-mono text-slate-400">{modelName}</p>
-          <div className="w-full bg-slate-700 rounded-full h-4 mb-4">
+          <div className="w-full mb-3">
+            <label className="block text-[10px] uppercase tracking-wide text-slate-400 mb-1">
+              Model
+            </label>
+            <select
+              value={modelName}
+              onChange={handleModelChange}
+              disabled={isDownloading}
+              className="w-full text-xs bg-slate-900 border border-slate-700 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {fallbackModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="w-full bg-slate-700 rounded-full h-4 mb-4 overflow-hidden">
             <div
-              className="bg-blue-500 h-4 rounded-full transition-all"
+              className="bg-blue-500 h-4 rounded-full transition-all duration-300"
               style={{ width: `${downloadProgress}%` }}
             ></div>
           </div>
           <span className="text-sm mb-2">{downloadProgress}%</span>
           {!error && (
-            <span className="text-xs text-slate-400">
-              Preparing model (GPU memory dependent)...
+            <span className="text-xs text-slate-400 text-center">
+              {downloadProgress < 100
+                ? "Downloading & preparing model (GPU memory dependent)..."
+                : "Finalizing engine initialization..."}
             </span>
           )}
           {error && (
@@ -206,14 +251,24 @@ function App() {
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
       <header className="h-12 flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/95">
         <h1 className="text-sm font-semibold tracking-wide">WebLLM Chat</h1>
-        {engine && (
-          <span className="text-[10px] px-2 py-1 rounded bg-slate-800 border border-slate-700 font-mono">
-            {modelName}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          <select
+            value={modelName}
+            onChange={handleModelChange}
+            disabled={loading}
+            className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-1 font-mono"
+            title="Select model (will reinitialize)"
+          >
+            {fallbackModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           onClick={clearChat}
-          disabled={loading}
+          disabled={loading || !engine}
           className="ml-auto text-xs px-3 py-1 rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-40"
         >
           Clear
@@ -261,10 +316,10 @@ function App() {
           />
           <button
             type="submit"
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || loading || !engine}
             className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "..." : "Send"}
+            {loading ? "..." : !engine ? "Init" : "Send"}
           </button>
         </div>
       </form>
