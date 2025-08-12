@@ -29,10 +29,10 @@ function App() {
 
     // Ordered fallback list (largest to smallest). Adjust with available models in your bundle.
     const fallbackModels = [
+      "Llama-3.2-1B-Instruct-q4f16_1-MLC", // much smaller
       "Llama-3.1-8B-Instruct-q4f32_1-MLC", // original attempt
       "Llama-3.1-8B-Instruct-q4f16_1-MLC", // slightly smaller (example)
       "Llama-3.2-3B-Instruct-q4f16_1-MLC", // smaller
-      "Llama-3.2-1B-Instruct-q4f16_1-MLC", // much smaller
     ];
 
     const loadModel = async (nameIdx = 0) => {
@@ -111,7 +111,9 @@ function App() {
       const result = await engine.chat.completions.create({
         messages: [{ role: "user", content: text }],
       });
-      return result;
+
+      console.log("Result:", result);
+      return result.choices[0].message.content || "No response";
     } catch (err) {
       const msg = `Generation error: ${err?.message || err}`;
       console.error(msg);
