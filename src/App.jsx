@@ -24,6 +24,7 @@ function App() {
   const [engine, setEngine] = useState(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [progressMessage, setProgressMessage] = useState("");
   // Model management
   const fallbackModels = FALLBACK_MODELS; // alias for readability
   const [modelName, setModelName] = useState(
@@ -59,7 +60,10 @@ function App() {
             const percent = Math.round((progressObj.progress ?? 0) * 100);
             setDownloadProgress(percent);
             setIsDownloading(percent < 100);
-            if (progressObj.text) console.log(progressObj.text);
+            if (progressObj.text) {
+              console.log(progressObj.text);
+              setProgressMessage(progressObj.text);
+            }
           },
         });
         if (cancelled) return;
@@ -228,6 +232,13 @@ function App() {
                 : "Finalizing engine initialization..."}
             </span>
           )}
+
+          {progressMessage && (
+            <div className="text-xs text-slate-400 mt-2 text-center whitespace-pre-wrap">
+              {progressMessage}
+            </div>
+          )}
+
           {error && (
             <div className="text-xs text-red-400 mt-2 text-center whitespace-pre-wrap">
               {error}
