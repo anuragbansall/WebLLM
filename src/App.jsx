@@ -7,10 +7,9 @@ const FALLBACK_MODELS = [
   "Llama-3.1-8B-Instruct-q4f32_1-MLC",
   "Llama-3.1-8B-Instruct-q4f16_1-MLC",
   "Llama-3.2-3B-Instruct-q4f16_1-MLC",
-  "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+  "Llama-3.2-1B-Instruct-q4f16_1-MLC", // Smallest fallback
 ];
 
-// Tiny helper for ids
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 function App() {
@@ -25,18 +24,28 @@ function App() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState("");
-  // Model management
-  const fallbackModels = FALLBACK_MODELS; // alias for readability
+  const fallbackModels = FALLBACK_MODELS;
   const [modelName, setModelName] = useState(
-    // default to smallest for quicker first load
     "Llama-3.2-1B-Instruct-q4f16_1-MLC"
   );
-  const [reloadToken, setReloadToken] = useState(0); // increment to force reload when same model selected again
+  const [reloadToken, setReloadToken] = useState(0);
   const [error, setError] = useState(null);
   const triedModelsRef = useRef([]);
 
   console.log("Engine: ", engine);
 
+  // 🛠️ Request persistent storage
+  useEffect(() => {
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().then((granted) => {
+        console.log(
+          granted ? "Persistent storage granted" : "Persistent storage denied"
+        );
+      });
+    }
+  }, []);
+
+  // 🎯 Load and fallback models
   useEffect(() => {
     let cancelled = false;
     const startIndex =
@@ -45,14 +54,15 @@ function App() {
         : 0;
 
     const loadModel = async (nameIdx = startIndex) => {
-      if (cancelled) return;
-      if (nameIdx >= fallbackModels.length) return; // exhausted
+      if (cancelled || nameIdx >= fallbackModels.length) return;
       const selectedModel = fallbackModels[nameIdx];
+
       setIsDownloading(true);
       setDownloadProgress(0);
       setError(null);
       triedModelsRef.current.push(selectedModel);
       console.log("Attempting model:", selectedModel);
+
       try {
         const created = await webllm.CreateMLCEngine(selectedModel, {
           initProgressCallback: (progressObj) => {
@@ -66,6 +76,7 @@ function App() {
             }
           },
         });
+
         if (cancelled) return;
         setEngine(created);
         setIsDownloading(false);
@@ -73,37 +84,39 @@ function App() {
         console.log("Engine initialized with", selectedModel);
       } catch (err) {
         if (cancelled) return;
-        console.error("Engine init failed for", selectedModel, err);
         const message = String(err?.message || err);
+        console.error("Engine init failed for", selectedModel, message);
         setError(message);
+
+        if (/QuotaExceededError/i.test(message)) {
+          setError(
+            "Storage quota exceeded. Try clearing browser cache, avoid incognito mode, or use a different browser with more available storage."
+          );
+          setIsDownloading(false);
+          return;
+        }
+
         if (/device lost|insufficient memory|Device was lost/i.test(message)) {
           console.warn("GPU device lost or OOM; trying smaller model...");
-          await loadModel(nameIdx + 1); // try next smaller
+          await loadModel(nameIdx + 1);
         } else {
           setIsDownloading(false);
         }
       }
     };
 
-    // Only auto-load if engine not set (we reset engine when switching models)
     if (!engine) loadModel();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelName, reloadToken, engine]);
 
-  // Always scroll to bottom when messages change
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
   const checkUserOnline = () => {
-    if (navigator.onLine) {
-      setUserOnline(true);
-    } else {
-      setUserOnline(false);
-    }
+    setUserOnline(navigator.onLine);
   };
 
   useEffect(() => {
@@ -122,8 +135,6 @@ function App() {
       const result = await engine.chat.completions.create({
         messages: [{ role: "user", content: text }],
       });
-
-      console.log("Result:", result);
       return result.choices[0].message.content || "No response";
     } catch (err) {
       const msg = `Generation error: ${err?.message || err}`;
@@ -138,7 +149,6 @@ function App() {
     const value = input.trim();
     if (!value || loading) return;
 
-    // Add user + placeholder system
     const userMsg = { id: uid(), role: "user", content: value };
     const placeholderId = uid();
     const placeholder = {
@@ -147,6 +157,7 @@ function App() {
       content: "Thinking...",
       pending: true,
     };
+
     setMessages((m) => [...m, userMsg, placeholder]);
     setInput("");
     setLoading(true);
@@ -175,9 +186,9 @@ function App() {
 
   const handleModelChange = (e) => {
     const newModel = e.target.value;
-    if (newModel === modelName && engine) return; // no-op
+    if (newModel === modelName && engine) return;
     setModelName(newModel);
-    setEngine(null); // trigger re-init loading screen
+    setEngine(null);
     setMessages([
       {
         id: uid(),
@@ -188,8 +199,7 @@ function App() {
     setReloadToken((t) => t + 1);
   };
 
-  // Keep showing loading screen until engine is actually initialized.
-  // (Previously UI switched when download reached 100% but engine promise not yet resolved.)
+  // Loading screen
   if (!engine) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-slate-100 px-4">
@@ -201,6 +211,7 @@ function App() {
               ? "Loading Model..."
               : "Initializing Engine..."}
           </h2>
+
           <div className="w-full mb-3">
             <label className="block text-[10px] uppercase tracking-wide text-slate-400 mb-1">
               Model
@@ -218,6 +229,7 @@ function App() {
               ))}
             </select>
           </div>
+
           <div className="w-full bg-slate-700 rounded-full h-4 mb-4 overflow-hidden">
             <div
               className="bg-blue-500 h-4 rounded-full transition-all duration-300"
@@ -225,6 +237,7 @@ function App() {
             ></div>
           </div>
           <span className="text-sm mb-2">{downloadProgress}%</span>
+
           {!error && (
             <span className="text-xs text-slate-400 text-center">
               {downloadProgress < 100
@@ -242,8 +255,18 @@ function App() {
           {error && (
             <div className="text-xs text-red-400 mt-2 text-center whitespace-pre-wrap">
               {error}
+              {error.toLowerCase().includes("quota") && (
+                <div className="text-xs text-orange-300 mt-2 text-left">
+                  <ul className="list-disc ml-4">
+                    <li>Clear browser cache / site data</li>
+                    <li>Try a non-incognito window</li>
+                    <li>Use a browser with more available space</li>
+                  </ul>
+                </div>
+              )}
             </div>
           )}
+
           {error && (
             <button
               onClick={() => window.location.reload()}
@@ -257,7 +280,7 @@ function App() {
     );
   }
 
-  // Chat screen
+  // Chat UI
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
       <header className="h-12 flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/95">
@@ -284,7 +307,6 @@ function App() {
         >
           Clear
         </button>
-
         <div className="ml-2 text-xs">
           {userOnline ? (
             <span className="text-green-400">
@@ -299,6 +321,7 @@ function App() {
           )}
         </div>
       </header>
+
       <main className="flex-1 overflow-hidden">
         <div
           ref={scrollRef}
@@ -314,6 +337,7 @@ function App() {
           ))}
         </div>
       </main>
+
       <form
         onSubmit={handleSubmit}
         className="fixed bottom-0 left-0 right-0 border-t border-slate-800 bg-slate-900/95 backdrop-blur"
